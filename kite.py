@@ -1,4 +1,5 @@
 import logging
+import os
 from kiteconnect import KiteConnect
 import pandas as pd
 from dotenv import load_dotenv
@@ -11,7 +12,6 @@ access_token = os.getenv('KITE_ACCESS_TOKEN')
 
 kite = KiteConnect(api_key=api_key)
 kite.set_access_token(access_token)
-
 
 print("Kite Connect session established successfully.")
 
@@ -26,8 +26,6 @@ print(f"User Type: {profile_info.get('user_type', 'N/A')}")
 print(f"Exchanges: {profile_info.get('exchanges', [])}")
 print(f"Products: {profile_info.get('products', [])}")
 print(f"Order Types: {profile_info.get('order_types', [])}")
-
-
 
 # Get holdings info
 holdings_info = kite.holdings()
@@ -47,3 +45,25 @@ if holdings_info:
 else:
     print("No holdings found.")
 
+# HARDCODED MARKET ORDER FUNCTION
+def place_market_order(tradingsymbol,quantity,transaction_type):
+    """Place a market order with hardcoded values"""
+    try:
+        order_id = kite.place_order(
+            variety="amo",
+            exchange="NSE",
+            tradingsymbol=None,
+            transaction_type=None,
+            quantity=None,
+            product="CNC",
+            order_type="MARKET",
+            validity="DAY"  # Added required validity parameter
+        )
+        print(f"Market order placed successfully. Order ID: {order_id}")
+        return order_id
+    except Exception as e:
+        print(f"Order placement failed: {e}")
+        return None
+
+# CALL THE FUNCTION (moved outside the function definition)
+place_market_order()
