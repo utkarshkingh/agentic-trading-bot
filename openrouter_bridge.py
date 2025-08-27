@@ -8,11 +8,17 @@ from zerodha_mcp_client import ZerodhaMCPClient
 load_dotenv()
 
 # Set OpenRouter API key globally for LiteLLM
-os.environ["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
+openrouter_key = os.getenv("OPENROUTER_API_KEY")
+if openrouter_key:
+    os.environ["OPENROUTER_API_KEY"] = openrouter_key
+else:
+    print("⚠️  OPENROUTER_API_KEY not found in environment. Some features may not work.")
+    # Set a dummy key for testing
+    os.environ["OPENROUTER_API_KEY"] = "dummy-key-for-testing"
 
 class MCPLiteLLMBridge:
-    def __init__(self):
-        self.mcp_client = ZerodhaMCPClient()
+    def __init__(self, enable_mock=True):
+        self.mcp_client = ZerodhaMCPClient(enable_mock=enable_mock)
         self.tools = []
 
     async def initialize(self):
@@ -34,9 +40,38 @@ class MCPLiteLLMBridge:
         
         print(f" Loaded {len(self.tools)} trading tools")
         return True
+    
+    async def ensure_mcp_connection(self):
+        """Ensure MCP connection is active before making calls"""
+        if not self.mcp_client.is_connected():
+            print("🔄 MCP connection lost, attempting to reconnect...")
+            if await self.mcp_client.connect():
+                # Reload tools after reconnection
+                mcp_tools = await self.mcp_client.get_available_tools()
+                self.tools = []
+                
+                for tool in mcp_tools:
+                    self.tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "parameters": tool.get("schema", {"type": "object", "properties": {}})
+                        }
+                    })
+                print(f"✅ Reconnected and reloaded {len(self.tools)} trading tools")
+                return True
+            else:
+                print("❌ Failed to reconnect to MCP server")
+                return False
+        return True
 
     async def chat(self, user_message, model="openrouter/google/gemini-2.5-pro"):
         """Chat using OpenRouter models via LiteLLM"""
+        # Ensure MCP connection is active before proceeding
+        if not await self.ensure_mcp_connection():
+            return "❌ Unable to connect to trading services. Please try again later."
+            
         messages = [
             {
                 "role": "system",
@@ -60,6 +95,11 @@ class MCPLiteLLMBridge:
             tool_calls = getattr(assistant_message, 'tool_calls', None)
             if tool_calls:
                 print("🔧 Executing trading tools...")
+                
+                # Double-check connection before tool execution
+                if not await self.ensure_mcp_connection():
+                    return "❌ Lost connection to trading services during tool execution. Please try again."
+                
                 messages.append({
                     "role": "assistant",
                     "content": assistant_message.content,
