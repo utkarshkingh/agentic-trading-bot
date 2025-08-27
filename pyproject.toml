@@ -1,7 +1,17 @@
 [project]
 name = "agentic-trading-bot"
 version = "0.1.0"
-description = "Add your description here"
+description = "LLM powered Agentic trading bot using MCP server and Zerodha Kite Connect APIs"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "mcp[cli]>=1.1.0",
+    "litellm>=1.45.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.25.0",
+    "pydantic>=2.5.0",
+    "kiteconnect>=4.2.0",
+]
+
+[tool.setuptools]
+py-modules = ["zerodha_mcp_client", "openrouter_bridge", "main", "kite"]
