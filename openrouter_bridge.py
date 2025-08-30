@@ -7,12 +7,18 @@ from dotenv import load_dotenv
 import litellm
 from zerodha_mcp_client import ZerodhaMCPClient
 
+
+
 load_dotenv()
+
+
 
 # Set OpenRouter API key globally for LiteLLM
 openrouter_key = os.getenv("OPENROUTER_API_KEY")
 if openrouter_key:
     os.environ["OPENROUTER_API_KEY"] = openrouter_key
+
+
 
 class MCPLiteLLMBridge:
     """
@@ -26,6 +32,35 @@ class MCPLiteLLMBridge:
         self.tools: List[Dict[str, Any]] = []
         self.logger = logging.getLogger(__name__)
         self._initialized = False
+        # Add a single history list to store the conversation
+        self.messages: List[Dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": """You are a professional trading assistant with access to Zerodha Kite trading tools. 
+
+
+
+IMPORTANT OAUTH AUTHENTICATION FLOW:
+- When users want to access their trading data, use the 'login' tool first
+- The login tool will generate a Zerodha OAuth URL
+- Tell the user to visit that URL to authenticate manually
+- After authentication, they can use other trading tools
+
+
+
+Available capabilities:
+- Portfolio management (view holdings, positions, margins)
+- Order management (place, modify, cancel orders)
+- Market data access (quotes, historical data)
+- Authentication via OAuth flow
+
+
+
+Always prioritize user security and explain the authentication process clearly."""
+            }
+        ]
+
+
 
     async def initialize(self) -> bool:
         """Initialize the MCP client and load available tools"""
@@ -67,7 +102,9 @@ class MCPLiteLLMBridge:
             self.logger.error(f"Failed to initialize: {e}")
             return False
 
-    async def chat(self, user_message: str, model: str = "openrouter/google/gemini-2.0-flash-exp") -> str:
+
+
+    async def chat(self, user_message: str, model: str = "openrouter/google/gemini-2.5-pro") -> str:
         """
         Chat using OpenRouter models via LiteLLM with MCP tool integration.
         
@@ -88,27 +125,8 @@ class MCPLiteLLMBridge:
             if not await self.mcp_client.connect():
                 return " Lost connection to Zerodha MCP server. Please try again later."
         
-        messages = [
-            {
-                "role": "system",
-                "content": """You are a professional trading assistant with access to Zerodha Kite trading tools. 
-
-IMPORTANT OAUTH AUTHENTICATION FLOW:
-- When users want to access their trading data, use the 'login' tool first
-- The login tool will generate a Zerodha OAuth URL
-- Tell the user to visit that URL to authenticate manually
-- After authentication, they can use other trading tools
-
-Available capabilities:
-- Portfolio management (view holdings, positions, margins)
-- Order management (place, modify, cancel orders)
-- Market data access (quotes, historical data)
-- Authentication via OAuth flow
-
-Always prioritize user security and explain the authentication process clearly."""
-            },
-            {"role": "user", "content": user_message}
-        ]
+        # Append the new user message to the persistent history
+        self.messages.append({"role": "user", "content": user_message})
         
         try:
             # Validate OpenRouter API key
@@ -117,10 +135,10 @@ Always prioritize user security and explain the authentication process clearly."
             
             self.logger.info(f"Sending request to {model}")
             
-            # First API call with tools
+            # First API call with tools, using the instance's message history
             response = litellm.completion(
                 model=model,
-                messages=messages,
+                messages=self.messages,
                 tools=self.tools,
                 timeout=120
             )
@@ -132,21 +150,8 @@ Always prioritize user security and explain the authentication process clearly."
             if tool_calls:
                 self.logger.info(f"🔧 Executing {len(tool_calls)} tool call(s)...")
                 
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_message.content,
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call.function.name,
-                                "arguments": tool_call.function.arguments
-                            }
-                        }
-                        for tool_call in tool_calls
-                    ]
-                })
+                # Append the assistant's message with tool call requests to history
+                self.messages.append(assistant_message)
                 
                 # Execute each tool call
                 for tool_call in tool_calls:
@@ -159,14 +164,20 @@ Always prioritize user security and explain the authentication process clearly."
                     
                     self.logger.info(f"Calling tool: {function_name} with args: {arguments}")
                     
-                    # Execute MCP tool with error handling
+                    # Execute MCP tool and handle structured data
                     try:
                         result = await self.mcp_client.call_tool(function_name, arguments)
                         
                         if result["success"]:
-                            content = result["text"] or "Tool executed successfully"
-                            if result.get("structured"):
-                                content += f"\n\nStructured data: {json.dumps(result['structured'], indent=2)}"
+                            text_content = result.get("text")
+                            structured_content = result.get("structured")
+
+                            if structured_content:
+                                content = f"Tool executed successfully.\n\nData: {json.dumps(structured_content, indent=2)}"
+                            elif text_content:
+                                content = text_content
+                            else:
+                                content = "Tool executed successfully but returned no data."
                         else:
                             content = f"Error: {result['error']}"
                             
@@ -174,8 +185,8 @@ Always prioritize user security and explain the authentication process clearly."
                         self.logger.error(f"Tool execution failed: {e}")
                         content = f"Tool execution failed: {str(e)}"
                     
-                    # Add tool result to messages
-                    messages.append({
+                    # Add tool result to history
+                    self.messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "content": content
@@ -185,23 +196,33 @@ Always prioritize user security and explain the authentication process clearly."
                 self.logger.info("Generating final response with tool results...")
                 final_response = litellm.completion(
                     model=model,
-                    messages=messages,
+                    messages=self.messages,
                     timeout=60
                 )
                 
-                return final_response.choices[0].message.content
+                final_content = final_response.choices[0].message.content
+                # Append the final assistant response to history
+                self.messages.append({"role": "assistant", "content": final_content})
+                return final_content
             
             else:
-                return assistant_message.content
+                # No tool calls, just append the response to history
+                assistant_content = assistant_message.content
+                self.messages.append({"role": "assistant", "content": assistant_content})
+                return assistant_content
         
         except Exception as e:
             self.logger.error(f"Chat error: {e}")
             return f" Error: {str(e)}"
 
+
+
     async def cleanup(self):
         """Clean up resources"""
         self._initialized = False
         await self.mcp_client.disconnect()
+
+
 
 async def trading_chat():
     """Interactive trading assistant using OpenRouter LLMs and Zerodha MCP"""
@@ -246,7 +267,7 @@ async def trading_chat():
     for i, model in enumerate(models, 1):
         print(f"  {i}. {model}")
     
-    current_model = "openrouter/google/gemini-2.0-flash-exp"
+    current_model = "openrouter/google/gemini-2.5-pro"
     print(f"\n Current model: {current_model}")
     
     print("\n Commands:")
@@ -313,6 +334,8 @@ async def trading_chat():
         print("\n Cleaning up...")
         await bridge.cleanup()
         print(" Goodbye!")
+
+
 
 
 if __name__ == "__main__":
