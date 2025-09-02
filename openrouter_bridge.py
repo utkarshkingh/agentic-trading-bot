@@ -3,12 +3,9 @@ import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, AsyncGenerator
-
 import litellm
 from dotenv import load_dotenv
-
 from zerodha_mcp_client import ZerodhaMCPClient
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -32,7 +29,6 @@ class MCPLiteLLMBridge:
         self.mcp_client = ZerodhaMCPClient(remote_url)
         self.tools: List[Dict[str, Any]] = []
         self._initialized = False
-
         self.system_message = {
             "role": "system",
             "content": (
@@ -46,11 +42,11 @@ class MCPLiteLLMBridge:
                 "- Portfolio management (view holdings, positions, margins)\n"
                 "- Order management (place, modify, cancel orders)\n"
                 "- Market data access (quotes, historical data)\n"
-                "- Authentication via OAuth flow\n\n"
+                "- Authentication via OAuth flow\n"
+                "- Data analysis with json_dataframe tool for converting trading JSON to DataFrame\n\n"
                 "Always prioritize user security and explain the authentication process clearly."
             )
         }
-
         # Back-compat single-session history for chat()
         self.messages: List[Dict[str, Any]] = [self.system_message]
 
@@ -67,6 +63,65 @@ class MCPLiteLLMBridge:
                 # Fallback
                 return response.choices[0] if hasattr(response.choices, '__getitem__') else response.choices
 
+    def _add_json_dataframe_tool(self):
+        """Add the local json_dataframe tool for data analysis"""
+        self.tools.append({
+            "type": "function",
+            "function": {
+                "name": "json_dataframe",
+                "description": "Converts trading JSON (from get_historical_data) to DataFrame for analysis.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "json_string": {"type": "string", "description": "JSON string from get_historical_data."},
+                        "set_date_index": {"type": "boolean", "description": "Set 'date' column as DataFrame index.", "default": False},
+                        "return_format": {"type": "string", "enum": ["records", "summary", "csv_string"], "description": "Output format.", "default": "records"}
+                    },
+                    "required": ["json_string"]
+                }
+            }
+        })
+
+    async def _execute_json_dataframe(self, arguments):
+        """Execute the json_dataframe tool locally"""
+        import json
+        import pandas as pd
+        try:
+            json_str = arguments.get('json_string')
+            set_date_index = arguments.get('set_date_index', False)
+            return_format = arguments.get('return_format', 'records')
+            
+            data = json.loads(json_str)
+            df = pd.DataFrame(data)
+            
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+            
+            if set_date_index and 'date' in df.columns:
+                df.set_index('date', inplace=True)
+            
+            if return_format == 'summary':
+                summary = {
+                    'shape': df.shape,
+                    'columns': df.columns.tolist(),
+                    'date_range': {
+                        'start': df['date'].min().isoformat() if 'date' in df.columns and not set_date_index else None,
+                        'end': df['date'].max().isoformat() if 'date' in df.columns and not set_date_index else None
+                    },
+                    'stats': df.describe().to_dict()
+                }
+                return {'success': True, 'text': 'Summary generated.', 'structured': summary}
+            elif return_format == 'csv_string':
+                csv_str = df.to_csv(index=set_date_index)
+                return {'success': True, 'text': csv_str, 'structured': {'format': 'csv', 'rows': df.shape[0], 'cols': df.shape[1]}}
+            else:
+                if 'date' in df.columns and not set_date_index:
+                    df['date'] = df['date'].dt.strftime('%Y-%m-%dT%H:%M:%S')
+                records = df.to_dict(orient='records')
+                return {'success': True, 'text': 'Converted to records.', 'structured': {'data': records, 'rows': df.shape[0], 'cols': df.shape[1]}}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
     async def initialize(self) -> bool:
         """Lazy initialize MCP connection and tool schemas."""
         if self._initialized:
@@ -76,7 +131,7 @@ class MCPLiteLLMBridge:
             if not await self.mcp_client.connect(timeout_seconds=30.0):
                 self.logger.error("Failed to connect to MCP server")
                 return False
-
+            
             mcp_tools = await self.mcp_client.get_available_tools()
             self.tools = []
             for tool in mcp_tools:
@@ -88,6 +143,10 @@ class MCPLiteLLMBridge:
                         "parameters": tool.get("schema", {"type": "object", "properties": {}})
                     }
                 })
+            
+            # Add the local json_dataframe tool
+            self._add_json_dataframe_tool()
+            
             self._initialized = True
             tool_names = [t["function"]["name"] for t in self.tools]
             self.logger.info(f"Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
@@ -139,8 +198,14 @@ class MCPLiteLLMBridge:
                         arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
                     except json.JSONDecodeError:
                         arguments = {}
+
                     try:
-                        result = await self.mcp_client.call_tool(function_name, arguments)
+                        # Handle local json_dataframe tool or remote MCP tools
+                        if function_name == "json_dataframe":
+                            result = await self._execute_json_dataframe(arguments)
+                        else:
+                            result = await self.mcp_client.call_tool(function_name, arguments)
+                        
                         if result["success"]:
                             text_content = result.get("text")
                             structured_content = result.get("structured")
@@ -171,7 +236,6 @@ class MCPLiteLLMBridge:
                 final_content = final_message.content or ""
                 self.messages.append({"role": "assistant", "content": final_content})
                 return final_content
-
             else:
                 assistant_content = assistant_message.content or ""
                 self.messages.append({"role": "assistant", "content": assistant_content})
@@ -227,26 +291,31 @@ class TradingChatSession:
                 tools=self.bridge.tools,
                 timeout=120
             )
+
             # Fixed: Use helper method for safe message extraction
             assistant_message = self.bridge._get_message_from_response(response)
-
             if assistant_message.content:
                 yield {"type": "assistant_message", "text": assistant_message.content}
 
             tool_calls = getattr(assistant_message, 'tool_calls', None)
             if tool_calls:
                 self.messages.append(assistant_message)
-
                 for tc in tool_calls:
                     fname = tc.function.name
                     try:
                         args = json.loads(tc.function.arguments) if tc.function.arguments else {}
                     except json.JSONDecodeError:
                         args = {}
+
                     yield {"type": "tool_call", "name": fname, "arguments": args}
 
                     try:
-                        result = await self.bridge.mcp_client.call_tool(fname, args)
+                        # Handle local json_dataframe tool or remote MCP tools
+                        if fname == "json_dataframe":
+                            result = await self.bridge._execute_json_dataframe(args)
+                        else:
+                            result = await self.bridge.mcp_client.call_tool(fname, args)
+                        
                         ok = result.get("success", False)
                         text = result.get("text") or ""
                         structured = result.get("structured")
@@ -351,16 +420,13 @@ async def index():
       <button id="btn-auth">Start OAuth</button>
     </div>
   </header>
-
   <main id="chat"></main>
-
   <footer>
     <form id="msg-form">
       <input id="msg-input" type="text" placeholder="Type a message..." autocomplete="off" />
       <button type="submit">Send</button>
     </form>
   </footer>
-
   <script>
     const chat = document.getElementById("chat");
     const form = document.getElementById("msg-form");
@@ -368,9 +434,7 @@ async def index():
     const btnStatus = document.getElementById("btn-status");
     const btnAuth = document.getElementById("btn-auth");
     const modelSelect = document.getElementById("model");
-
     let ws;
-
     function addMsg(text, cls = "assistant") {
       const div = document.createElement("div");
       div.className = "msg " + cls;
@@ -378,7 +442,6 @@ async def index():
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
     }
-
     function addToolCall(name, args) {
       const div = document.createElement("div");
       div.className = "msg toolcall";
@@ -386,7 +449,6 @@ async def index():
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
     }
-
     function addToolResult(name, ok, text, structured) {
       const div = document.createElement("div");
       div.className = "msg toolresult";
@@ -395,7 +457,6 @@ async def index():
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
     }
-
     function connect() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(proto + "://" + location.host + "/ws");
@@ -431,7 +492,6 @@ async def index():
       };
       ws.onclose = () => addMsg("Disconnected", "system");
     }
-
     form.addEventListener("submit", (e) => {
       e.preventDefault();
       const text = input.value.trim();
@@ -440,19 +500,16 @@ async def index():
       ws.send(JSON.stringify({ type: "user_message", text, model: modelSelect.value }));
       input.value = "";
     });
-
     btnStatus.addEventListener("click", () => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "status" }));
     });
-
     btnAuth.addEventListener("click", () => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const text = "Please help me authenticate with Zerodha.";
       addMsg(text, "user");
       ws.send(JSON.stringify({ type: "user_message", text, model: modelSelect.value }));
     });
-
     connect();
   </script>
 </body>
@@ -494,8 +551,8 @@ async def ws_endpoint(ws: WebSocket):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     
-    print(f"\n🚀 Starting MCP Trading Assistant")
-    print(f"📱 Web Interface: http://localhost:{port}")
+    print(f"\n Starting MCP Trading Assistant")
+    print(f" Web Interface: http://localhost:{port}")
     print(f"\nPress Ctrl+C to stop\n")
     
     uvicorn.run("openrouter_bridge:app", host="localhost", port=port, reload=False)
