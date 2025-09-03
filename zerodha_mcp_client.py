@@ -447,14 +447,14 @@ async def test_enhanced_client():
             # Test health check
             print(" Testing connection health...")
             healthy = await client.health_check()
-            print(f" Connection health: {' Healthy' if healthy else '❌ Unhealthy'}")
+            print(f" Connection health: {' Healthy' if healthy else ' Unhealthy'}")
             print()
 
         except Exception as e:
             print(f" Error during testing: {e}")
             
         finally:
-            print("🔌 Disconnecting from server...")
+            print(" Disconnecting from server...")
             await client.disconnect()
             print(" Disconnected successfully")
             
@@ -468,7 +468,7 @@ async def test_enhanced_client():
         print(f"  5. Test manual connection: curl -I {client.server_url}")
         
     print("\n" + "=" * 50)
-    print("🏁 Test completed")
+    print(" Test completed")
 
 
 if __name__ == "__main__":
