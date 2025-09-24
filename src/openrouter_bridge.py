@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 
 import litellm
 from dotenv import load_dotenv
-from zerodha_mcp_client import ZerodhaMCPClient
+from src.zerodha_mcp_client import ZerodhaMCPClient
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
