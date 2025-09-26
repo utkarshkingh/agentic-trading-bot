@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 
 import litellm
 from dotenv import load_dotenv
-from mcp_client import ZerodhaMCPClient
+from client import ZerodhaMCPClient
 from tools import get_all_bridge_tools, execute_bridge_tool, is_bridge_tool
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -26,7 +26,7 @@ class MCPLiteLLMBridge:
         self.mcp_client = ZerodhaMCPClient(remote_url)
         self.tools: List[Dict[str, Any]] = []
         self.initialized = False
-        
+
         self.system_message = {
             "role": "system",
             "content": (
@@ -45,7 +45,6 @@ class MCPLiteLLMBridge:
                 "Always prioritize user security and explain the authentication process clearly."
             )
         }
-        self.messages: List[Dict[str, Any]] = [self.system_message]
 
     def get_message_from_response(self, response):
         try:
@@ -60,8 +59,8 @@ class MCPLiteLLMBridge:
         if self.initialized:
             return True
         try:
-            self.logger.info("Initializing MCP-LiteLLM Bridge…")
-            
+            self.logger.info("Initializing MCP-LiteLLM Bridge...")
+
             # Use mcp_client's connection method
             if not await self.mcp_client.connect_to_server():
                 self.logger.error("Failed to connect to MCP server")
@@ -81,7 +80,7 @@ class MCPLiteLLMBridge:
 
             # Add bridge tools from tools.py
             self.tools.extend(get_all_bridge_tools())
-            
+
             self.initialized = True
             self.logger.info("Loaded %s tools", len(self.tools))
             return True
@@ -91,61 +90,6 @@ class MCPLiteLLMBridge:
 
     async def health_check(self) -> bool:
         return await self.mcp_client.health_check()
-
-    async def chat(self, user_message: str, model: str = "openrouter/qwen/qwen3-coder") -> str:
-        if not self.initialized and not await self.initialize():
-            return "Failed to initialize MCP bridge. Please check connection to Zerodha MCP server."
-
-        if not await self.mcp_client.health_check() and not await self.mcp_client.connect_to_server():
-            return "Lost connection to Zerodha MCP server. Please try again later."
-
-        self.messages.append({"role": "user", "content": user_message})
-
-        try:
-            if not os.getenv("OPENROUTER_API_KEY"):
-                return "OpenRouter API key not configured. Please set OPENROUTER_API_KEY."
-
-            response = litellm.completion(
-                model=model, messages=self.messages, tools=self.tools, timeout=120,
-            )
-            assistant_message = self.get_message_from_response(response)
-
-            tool_calls = getattr(assistant_message, "tool_calls", None)
-            if tool_calls:
-                self.messages.append(assistant_message)
-                for call in tool_calls:
-                    fn, args = call.function.name, json.loads(call.function.arguments or "{}")
-                    try:
-                        # Use bridge tools OR mcp_client's tools
-                        result = (
-                            await execute_bridge_tool(fn, args)
-                            if is_bridge_tool(fn)
-                            else await self.mcp_client.call_tool(fn, args)
-                        )
-                        
-                        content = (
-                            json.dumps(result.get("structured"), indent=2)
-                            if result["success"] and result.get("structured")
-                            else result.get("text", "Tool executed successfully but returned no data.")
-                            if result["success"]
-                            else f"Error: {result.get('error')}"
-                        )
-                    except Exception as e:
-                        content = f"Tool execution failed: {e}"
-
-                    self.messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
-
-                final = litellm.completion(model=model, messages=self.messages, timeout=60)
-                final_text = self.get_message_from_response(final).content or ""
-                self.messages.append({"role": "assistant", "content": final_text})
-                return final_text
-
-            assistant_text = assistant_message.content or ""
-            self.messages.append({"role": "assistant", "content": assistant_text})
-            return assistant_text
-        except Exception as exc:
-            self.logger.error("Chat error: %s", exc)
-            return f"Error: {exc}"
 
     def new_session(self) -> "TradingChatSession":
         return TradingChatSession(self)
@@ -180,9 +124,6 @@ class TradingChatSession:
                 model=model, messages=self.messages, tools=self.bridge.tools, timeout=120,
             )
             assistant = self.bridge.get_message_from_response(response)
-
-            if assistant.content:
-                yield {"type": "assistant_message", "text": assistant.content}
 
             tool_calls = getattr(assistant, "tool_calls", None)
             if tool_calls:
@@ -220,6 +161,7 @@ class TradingChatSession:
                 yield {"type": "assistant_final", "text": final_text}
                 return
 
+            # Handle direct response without tool calls
             final_text = assistant.content or ""
             self.messages.append({"role": "assistant", "content": final_text})
             yield {"type": "assistant_final", "text": final_text}
@@ -311,8 +253,13 @@ async def index():
     let ws;
 
     function linkifyText(text) {
-      const urlRegex = /(https?:\/\/[^\s]+)/gi;
-      return text.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+      // Improved URL regex that properly handles parentheses and other punctuation
+      const urlRegex = /(https?:\/\/[^\s()<>]+(?:\([^\s()<>]*\)|[^\s`!()\[\]{};:'".,<>?«»""'']))/gi;
+      return text.replace(urlRegex, function(url) {
+        // Clean trailing punctuation that shouldn't be part of the URL
+        let cleanUrl = url.replace(/[)\].,;!?]+$/, '');
+        return '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer">' + cleanUrl + '</a>';
+      });
     }
 
     function addMsg(text, cls = "assistant") {
@@ -349,7 +296,6 @@ async def index():
           const msg = JSON.parse(ev.data);
           switch (msg.type) {
             case "status":          addMsg("Status: " + msg.text, "system"); break;
-            case "assistant_message": addMsg(msg.text || "", "assistant"); break;
             case "tool_call":       addToolCall(msg.name, msg.arguments || {}); break;
             case "tool_result":     addToolResult(msg.name, !!msg.ok, msg.text, msg.structured); break;
             case "assistant_final": addMsg(msg.text || "", "assistant"); break;

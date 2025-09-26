@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import Optional, Dict, Any, List
-
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -90,6 +90,7 @@ class ZerodhaMCPClient:
                 "structured": None,
                 "error": str(e)
             }
+        
 
     async def authenticate_with_zerodha(self) -> Dict[str, Any]:
         """OAuth flow - uses persistent session"""
