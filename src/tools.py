@@ -1,117 +1,27 @@
-"""
-Local bridge tools to complement the remote MCP server.
-These tools handle DataFrame processing that the remote server doesn't provide.
-"""
 
 import json
 import pandas as pd
-from typing import Dict, Any, Literal, Optional
+from typing import Literal, Optional
+from langchain_core.tools import tool
 
 # Global storage for dataframes
 saved_dataframes: dict[str, pd.DataFrame] = {}
 
-def get_all_bridge_tools() -> list:
-    """Get all local bridge tools as LiteLLM-compatible schemas"""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "json_to_dataframe",
-                "description": "Convert trading JSON (from get_historical_data) to DataFrame for analysis",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "json_string": {
-                            "type": "string",
-                            "description": "JSON string from get_historical_data"
-                        },
-                        "return_format": {
-                            "type": "string",
-                            "enum": ["records", "summary", "csv"],
-                            "description": "Output format",
-                            "default": "records"
-                        },
-                        "set_date_index": {
-                            "type": "boolean",
-                            "description": "Set 'date' column as DataFrame index",
-                            "default": False
-                        },
-                        "save_name": {
-                            "type": "string",
-                            "description": "Save DataFrame in memory under this name"
-                        }
-                    },
-                    "required": ["json_string"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_saved_dataframes",
-                "description": "List all DataFrames saved in memory",
-                "parameters": {
-                    "type": "object",
-                    "properties": {}
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "clear_dataframes",
-                "description": "Clear all saved DataFrames from memory",
-                "parameters": {
-                    "type": "object",
-                    "properties": {}
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_dataframe_info",
-                "description": "Get detailed info about a saved DataFrame",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Name of the saved DataFrame"
-                        }
-                    },
-                    "required": ["name"]
-                }
-            }
-        }
-    ]
-
-async def execute_bridge_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a local bridge tool"""
-    
-    if tool_name == "json_to_dataframe":
-        return await json_to_dataframe(**arguments)
-    elif tool_name == "list_saved_dataframes":
-        return list_saved_dataframes()
-    elif tool_name == "clear_dataframes":
-        return clear_dataframes()
-    elif tool_name == "get_dataframe_info":
-        return get_dataframe_info(**arguments)
-    else:
-        raise ValueError(f"Unknown bridge tool: {tool_name}")
-
-def is_bridge_tool(tool_name: str) -> bool:
-    """Check if tool is a bridge tool"""
-    return tool_name in ["json_to_dataframe", "list_saved_dataframes", "clear_dataframes", "get_dataframe_info"]
-
-# Tool implementations
-async def json_to_dataframe(
+@tool
+def json_to_dataframe(
     json_string: str,
     return_format: Literal["records", "summary", "csv"] = "records",
     set_date_index: bool = False,
     save_name: Optional[str] = None
-) -> Dict[str, Any]:
-    """Convert trading JSON to DataFrame for analysis"""
+) -> str:
+    """Convert trading JSON (from get_historical_data) to DataFrame for analysis.
+    
+    Args:
+        json_string: JSON string from get_historical_data
+        return_format: Output format (records/summary/csv)
+        set_date_index: Set 'date' column as DataFrame index
+        save_name: Save DataFrame in memory under this name
+    """
     try:
         # Parse JSON data
         data = json.loads(json_string)
@@ -140,70 +50,124 @@ async def json_to_dataframe(
                 } if "date" in df.columns else None,
                 "stats": df.describe().to_dict()
             }
-            return {"success": True, "structured": summary, "text": "Summary generated"}
-        
+            return json.dumps({"success": True, "structured": summary, "text": "Summary generated"})
+            
         elif return_format == "csv":
             csv_str = df.to_csv(index=set_date_index)
-            return {
+            result = {
                 "success": True,
                 "structured": {"csv_content": csv_str, "rows": df.shape[0], "cols": df.shape[1]},
                 "text": f"CSV generated with {df.shape[0]} rows"
             }
-        
+            return json.dumps(result)
+            
         else:  # records
             if "date" in df.columns and not set_date_index:
                 df["date"] = df["date"].dt.strftime("%Y-%m-%dT%H:%M:%S")
-            
             records = df.to_dict(orient="records")
-            return {
+            result = {
                 "success": True,
                 "structured": {"data": records, "rows": df.shape[0], "cols": df.shape[1]},
                 "text": f"Converted {df.shape[0]} records"
             }
-    
+            return json.dumps(result)
+            
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return json.dumps({"success": False, "error": str(e)})
 
-def list_saved_dataframes() -> Dict[str, Any]:
-    """List all saved DataFrames"""
+@tool
+def list_saved_dataframes() -> str:
+    """List all DataFrames saved in memory."""
     result = {}
     for name, df in saved_dataframes.items():
         result[name] = f"{df.shape[0]}x{df.shape[1]} DataFrame"
     
-    return {
+    return json.dumps({
         "success": True,
         "structured": {"dataframes": result},
         "text": f"Found {len(result)} saved DataFrames"
-    }
+    })
 
-def clear_dataframes() -> Dict[str, Any]:
-    """Clear all saved DataFrames"""
+@tool
+def clear_dataframes() -> str:
+    """Clear all saved DataFrames from memory."""
     count = len(saved_dataframes)
     saved_dataframes.clear()
-    return {
+    
+    return json.dumps({
         "success": True,
         "structured": {"cleared_count": count},
         "text": f"Cleared {count} DataFrames"
-    }
+    })
 
-def get_dataframe_info(name: str) -> Dict[str, Any]:
-    """Get info about a saved DataFrame"""
+@tool
+def get_dataframe_info(name: str) -> str:
+    """Get detailed info about a saved DataFrame.
+    
+    Args:
+        name: Name of the saved DataFrame
+    """
     if name not in saved_dataframes:
-        return {
+        return json.dumps({
             "success": False,
             "error": f"DataFrame '{name}' not found"
-        }
+        })
     
     df = saved_dataframes[name]
     info = {
         "shape": df.shape,
         "columns": df.columns.tolist(),
-        "dtypes": df.dtypes.to_dict(),
-        "memory_usage": df.memory_usage(deep=True).sum()
+        "dtypes": df.dtypes.astype(str).to_dict(),
+        "memory_usage": int(df.memory_usage(deep=True).sum())
     }
     
-    return {
+    return json.dumps({
         "success": True,
         "structured": info,
         "text": f"DataFrame '{name}': {df.shape[0]} rows, {df.shape[1]} columns"
-    }
+    })
+
+# Get all tools as list for LangChain integration
+def get_langchain_tools():
+    """Get all tools as LangChain tool objects."""
+    return [json_to_dataframe, list_saved_dataframes, clear_dataframes, get_dataframe_info]
+
+# Bridge function for compatibility with existing openrouter_bridge.py
+def get_all_bridge_tools() -> list:
+    """Get all local bridge tools as LiteLLM-compatible schemas (for backwards compatibility)."""
+    tools = []
+    langchain_tools = get_langchain_tools()
+    
+    for tool in langchain_tools:
+        # Convert LangChain tool to LiteLLM format
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.args_schema.schema() if tool.args_schema else {"type": "object", "properties": {}}
+            }
+        })
+    
+    return tools
+
+def is_bridge_tool(tool_name: str) -> bool:
+    """Check if tool is a bridge tool."""
+    tool_names = [tool.name for tool in get_langchain_tools()]
+    return tool_name in tool_names
+
+async def execute_bridge_tool(tool_name: str, arguments: dict) -> dict:
+    """Execute a local bridge tool (for backwards compatibility)."""
+    tools_dict = {tool.name: tool for tool in get_langchain_tools()}
+    
+    if tool_name not in tools_dict:
+        raise ValueError(f"Unknown bridge tool: {tool_name}")
+    
+    tool = tools_dict[tool_name]
+    result_str = await tool.ainvoke(arguments) if hasattr(tool, 'ainvoke') else tool.invoke(arguments)
+    
+    # Parse JSON result back to dict for compatibility
+    try:
+        return json.loads(result_str)
+    except json.JSONDecodeError:
+        return {"success": False, "error": "Invalid JSON response from tool"}

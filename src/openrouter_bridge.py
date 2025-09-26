@@ -15,18 +15,26 @@ import uvicorn
 
 load_dotenv()
 
+# OpenRouter API key configuration
 openrouter_key = os.getenv("OPENROUTER_API_KEY")
 if openrouter_key:
     os.environ["OPENROUTER_API_KEY"] = openrouter_key
 
+
 class MCPLiteLLMBridge:
+   
     def __init__(self, server_url: Optional[str] = None):
         self.logger = logging.getLogger(__name__)
+
+        # Use client.py for MCP connection
         remote_url = server_url or os.getenv("MCP_SERVER_URL", "https://mcp.kite.trade/mcp")
         self.mcp_client = ZerodhaMCPClient(remote_url)
+
+        # Tool management
         self.tools: List[Dict[str, Any]] = []
         self.initialized = False
 
+        # System message for trading assistant
         self.system_message = {
             "role": "system",
             "content": (
@@ -47,6 +55,7 @@ class MCPLiteLLMBridge:
         }
 
     def get_message_from_response(self, response):
+        """Extract message from various LiteLLM response formats"""
         try:
             return response.choices[0].message
         except (AttributeError, IndexError, TypeError):
@@ -56,17 +65,19 @@ class MCPLiteLLMBridge:
                 return response.choices[0] if hasattr(response.choices, '__getitem__') else response.choices
 
     async def initialize(self) -> bool:
+        """Initialize bridge: connect to MCP server and load tools"""
         if self.initialized:
             return True
+
         try:
             self.logger.info("Initializing MCP-LiteLLM Bridge...")
 
-            # Use mcp_client's connection method
+            # Use client.py to establish MCP connection
             if not await self.mcp_client.connect_to_server():
                 self.logger.error("Failed to connect to MCP server")
                 return False
 
-            # Use mcp_client's tool discovery
+            # Load MCP tools via client.py
             self.tools = []
             for tool in await self.mcp_client.get_available_tools():
                 self.tools.append({
@@ -78,23 +89,37 @@ class MCPLiteLLMBridge:
                     }
                 })
 
-            # Add bridge tools from tools.py
+            # Add DataFrame tools from tools.py
             self.tools.extend(get_all_bridge_tools())
 
             self.initialized = True
             self.logger.info("Loaded %s tools", len(self.tools))
             return True
+
         except Exception as e:
             self.logger.error("Initialize failed: %s", e)
             return False
 
     async def health_check(self) -> bool:
+        """Check MCP client health via client.py"""
         return await self.mcp_client.health_check()
 
     def new_session(self) -> "TradingChatSession":
+        """Create new trading chat session"""
         return TradingChatSession(self)
 
+
 class TradingChatSession:
+    """
+    Individual trading chat session with message history and streaming
+
+    Responsibilities:
+    - Maintain conversation context
+    - Handle LiteLLM completion calls
+    - Route tool calls to appropriate handlers (MCP or local tools)
+    - Stream chat events to WebSocket clients
+    """
+
     def __init__(self, bridge: MCPLiteLLMBridge):
         self.bridge = bridge
         self.messages: List[Dict[str, Any]] = [bridge.system_message]
@@ -104,7 +129,9 @@ class TradingChatSession:
         user_message: str,
         model: str = "openrouter/qwen/qwen3-coder",
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream chat events with tool calling support"""
 
+        # Initialization checks
         if not self.bridge.initialized and not await self.bridge.initialize():
             yield {"type": "error", "text": "Failed to initialize MCP bridge."}
             return
@@ -113,32 +140,40 @@ class TradingChatSession:
             yield {"type": "error", "text": "OpenRouter API key not configured. Set OPENROUTER_API_KEY."}
             return
 
+        # Health check via client.py
         if not await self.bridge.mcp_client.health_check() and not await self.bridge.mcp_client.connect_to_server():
             yield {"type": "error", "text": "Lost connection to remote MCP server. Try again later."}
             return
 
+        # Add user message to context
         self.messages.append({"role": "user", "content": user_message})
 
         try:
+            # LiteLLM completion with OpenRouter
             response = litellm.completion(
-                model=model, messages=self.messages, tools=self.bridge.tools, timeout=120,
+                model=model, 
+                messages=self.messages, 
+                tools=self.bridge.tools, 
+                timeout=120,
             )
             assistant = self.bridge.get_message_from_response(response)
 
+            # Handle tool calls
             tool_calls = getattr(assistant, "tool_calls", None)
             if tool_calls:
                 self.messages.append(assistant)
+
                 for tc in tool_calls:
                     fname, args = tc.function.name, json.loads(tc.function.arguments or "{}")
                     yield {"type": "tool_call", "name": fname, "arguments": args}
 
                     try:
-                        # Use bridge tools OR mcp_client's tools
-                        result = (
-                            await execute_bridge_tool(fname, args)
-                            if is_bridge_tool(fname)
-                            else await self.bridge.mcp_client.call_tool(fname, args)
-                        )
+                        # Route tool execution: local tools (tools.py) or MCP tools (client.py)
+                        if is_bridge_tool(fname):
+                            result = await execute_bridge_tool(fname, args)
+                        else:
+                            result = await self.bridge.mcp_client.call_tool(fname, args)
+
                         ok = result.get("success", False)
                         text = result.get("text") or ""
                         structured = result.get("structured")
@@ -150,11 +185,13 @@ class TradingChatSession:
                         })
 
                         yield {"type": "tool_result", "name": fname, "ok": ok, "text": text, "structured": structured}
+
                     except Exception as e:
                         err = f"Tool execution failed: {e}"
                         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": err})
                         yield {"type": "tool_result", "name": fname, "ok": False, "text": err, "structured": None}
 
+                # Final LiteLLM response after tool calls
                 final = litellm.completion(model=model, messages=self.messages, timeout=60)
                 final_text = self.bridge.get_message_from_response(final).content or ""
                 self.messages.append({"role": "assistant", "content": final_text})
@@ -165,17 +202,21 @@ class TradingChatSession:
             final_text = assistant.content or ""
             self.messages.append({"role": "assistant", "content": final_text})
             yield {"type": "assistant_final", "text": final_text}
+
         except Exception as e:
             yield {"type": "error", "text": f"Chat error: {e}"}
 
-# Keep the rest exactly the same (FastAPI setup, HTML, WebSocket)
+
+# FastAPI Web Application
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application lifecycle management"""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     yield
+    # Cleanup MCP client connection
     try:
         await bridge.mcp_client.cleanup()
     except Exception:
@@ -185,8 +226,10 @@ app = FastAPI(lifespan=lifespan)
 bridge = MCPLiteLLMBridge(server_url=os.getenv("MCP_SERVER_URL"))
 sessions: Dict[str, TradingChatSession] = {}
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    """Serve the exact same HTML chat interface"""
     html = r"""
 <!doctype html>
 <html lang="en">
@@ -337,8 +380,10 @@ async def index():
     """.strip()
     return HTMLResponse(html)
 
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    """WebSocket endpoint for real-time chat"""
     await ws.accept()
     ws_id = str(id(ws))
     sessions[ws_id] = bridge.new_session()
@@ -369,6 +414,7 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         sessions.pop(ws_id, None)
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
