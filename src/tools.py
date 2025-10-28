@@ -1,8 +1,11 @@
 
 import json
 import pandas as pd
-from typing import Literal, Optional
-from langchain_core.tools import tool
+import pandas_ta as ta
+import inspect
+from typing import Literal, Optional, Any, Dict, List
+from langchain_core.tools import tool, StructuredTool
+from pydantic import BaseModel, Field, create_model
 
 # Global storage for dataframes
 saved_dataframes: dict[str, pd.DataFrame] = {}
@@ -127,10 +130,257 @@ def get_dataframe_info(name: str) -> str:
         "text": f"DataFrame '{name}': {df.shape[0]} rows, {df.shape[1]} columns"
     })
 
+# ============================================================================
+# Technical Analysis Tools - Dynamic Registration
+# ============================================================================
+
+def _create_ta_tool(indicator_name: str, indicator_func: callable) -> StructuredTool:
+    """
+    Dynamically create a LangChain tool for a pandas-ta indicator.
+    
+    This function introspects the indicator function signature and creates
+    a tool that works with saved DataFrames, following AI agent best practices.
+    
+    Args:
+        indicator_name: Name of the technical indicator (e.g., 'sma', 'rsi')
+        indicator_func: The actual pandas-ta indicator function
+        
+    Returns:
+        StructuredTool configured for the indicator
+    """
+    sig = inspect.signature(indicator_func)
+    params = sig.parameters
+    
+    # Extract docstring for description
+    doc = indicator_func.__doc__ or f"Calculate {indicator_name.upper()} technical indicator"
+    description = doc.strip().split('\n')[0]  # First line as description
+    
+    # Determine which price columns are needed
+    price_cols = []
+    for param_name in ['open_', 'high', 'low', 'close', 'volume']:
+        if param_name in params:
+            price_cols.append(param_name.rstrip('_'))
+    
+    # Build dynamic Pydantic model for parameters
+    field_definitions = {
+        'dataframe_name': (str, Field(description="Name of the saved DataFrame to analyze")),
+    }
+    
+    # Add optional parameters with defaults
+    for param_name, param in params.items():
+        if param_name in ['open_', 'high', 'low', 'close', 'volume', 'series', 'kwargs']:
+            continue  # Skip price columns and kwargs - we'll extract from dataframe
+            
+        # Get default value and type hint
+        default_val = param.default if param.default != inspect.Parameter.empty else None
+        param_type = param.annotation if param.annotation != inspect.Parameter.empty else Any
+        
+        # Map types for better schema generation
+        if param_type == inspect.Parameter.empty or 'Union' in str(param_type):
+            param_type = Any
+        
+        # All parameters should be Optional with None as default if no default specified
+        field_definitions[param_name] = (
+            Optional[param_type], 
+            Field(default=default_val, description=f"Parameter: {param_name}")
+        )
+    
+    # Add return column name
+    field_definitions['result_column_prefix'] = (
+        Optional[str], 
+        Field(default=None, description="Prefix for result column names in DataFrame (optional)")
+    )
+    
+    InputModel = create_model(f'{indicator_name.upper()}Input', **field_definitions)
+    
+    def ta_tool_func(**kwargs) -> str:
+        """Execute the technical analysis indicator on saved DataFrame."""
+        dataframe_name = kwargs.pop('dataframe_name')
+        result_prefix = kwargs.pop('result_column_prefix', None)
+        
+        # Validate DataFrame exists
+        if dataframe_name not in saved_dataframes:
+            return json.dumps({
+                "success": False,
+                "error": f"DataFrame '{dataframe_name}' not found. Use list_saved_dataframes to see available DataFrames."
+            })
+        
+        df = saved_dataframes[dataframe_name]
+        
+        try:
+            # Extract price data columns needed by this indicator
+            ta_kwargs = {}
+            for col in price_cols:
+                col_name = col.lower()
+                # Try common column name variations
+                for variant in [col_name, col_name.capitalize(), col_name.upper()]:
+                    if variant in df.columns:
+                        ta_kwargs[col if col != 'open' else 'open_'] = df[variant]
+                        break
+                else:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Required column '{col}' not found in DataFrame. Available: {df.columns.tolist()}"
+                    })
+            
+            # Add other parameters
+            for key, value in kwargs.items():
+                if value is not None:
+                    ta_kwargs[key] = value
+            
+            # Calculate indicator
+            result = indicator_func(**ta_kwargs)
+            
+            # Handle result (can be Series or DataFrame)
+            if isinstance(result, pd.Series):
+                col_name = result_prefix or indicator_name.upper()
+                df[col_name] = result
+                saved_dataframes[dataframe_name] = df
+                
+                return json.dumps({
+                    "success": True,
+                    "structured": {
+                        "indicator": indicator_name,
+                        "column_added": col_name,
+                        "non_null_values": int(result.notna().sum()),
+                        "stats": {
+                            "min": float(result.min()) if result.notna().any() else None,
+                            "max": float(result.max()) if result.notna().any() else None,
+                            "mean": float(result.mean()) if result.notna().any() else None,
+                        }
+                    },
+                    "text": f"Added {indicator_name.upper()} indicator as column '{col_name}' to DataFrame '{dataframe_name}'"
+                })
+            
+            elif isinstance(result, pd.DataFrame):
+                # Multiple columns returned (e.g., MACD, BBands)
+                prefix = result_prefix or indicator_name.upper()
+                new_cols = []
+                for col in result.columns:
+                    new_col_name = f"{prefix}_{col}" if not col.startswith(prefix) else col
+                    df[new_col_name] = result[col]
+                    new_cols.append(new_col_name)
+                
+                saved_dataframes[dataframe_name] = df
+                
+                return json.dumps({
+                    "success": True,
+                    "structured": {
+                        "indicator": indicator_name,
+                        "columns_added": new_cols,
+                        "num_columns": len(new_cols)
+                    },
+                    "text": f"Added {indicator_name.upper()} indicator columns {new_cols} to DataFrame '{dataframe_name}'"
+                })
+            
+            else:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Unexpected result type: {type(result)}"
+                })
+                
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "error": f"Error calculating {indicator_name}: {str(e)}"
+            })
+    
+    # Create the tool with proper metadata
+    tool_name = f"ta_{indicator_name}"
+    tool_description = f"{description}. Works on saved DataFrames with OHLCV data."
+    
+    return StructuredTool(
+        name=tool_name,
+        description=tool_description,
+        func=ta_tool_func,
+        args_schema=InputModel,
+    )
+
+
+def _get_ta_indicators() -> Dict[str, callable]:
+    """
+    Get all available pandas-ta indicator functions.
+    
+    Returns:
+        Dictionary mapping indicator names to their functions
+    """
+    indicators = {}
+    
+    # Iterate through pandas-ta module
+    for attr_name in dir(ta):
+        if attr_name.startswith('_'):
+            continue
+            
+        attr = getattr(ta, attr_name)
+        if not callable(attr) or not inspect.isfunction(attr):
+            continue
+        
+        # Check if it's an indicator function (has OHLCV parameters)
+        try:
+            sig = inspect.signature(attr)
+            params = list(sig.parameters.keys())
+            
+            # Most indicators take open, high, low, close, volume, or series
+            if any(p in params for p in ['open_', 'high', 'low', 'close', 'volume', 'series']):
+                indicators[attr_name] = attr
+        except:
+            continue
+    
+    return indicators
+
+
+def _register_ta_tools() -> List[StructuredTool]:
+    """
+    Register all pandas-ta indicators as LangChain tools.
+    
+    This follows best practices for AI agents:
+    - Clear, descriptive tool names (ta_<indicator>)
+    - Comprehensive docstrings
+    - Proper error handling
+    - Structured output format
+    - Works with saved DataFrames for efficiency
+    
+    Returns:
+        List of StructuredTool objects for all TA indicators
+    """
+    ta_tools = []
+    indicators = _get_ta_indicators()
+    
+    for indicator_name, indicator_func in indicators.items():
+        try:
+            tool = _create_ta_tool(indicator_name, indicator_func)
+            ta_tools.append(tool)
+        except Exception as e:
+            # Skip indicators that fail to register
+            print(f"Warning: Could not register {indicator_name}: {e}")
+            continue
+    
+    return ta_tools
+
+
 # Get all tools as list for LangChain integration
 def get_langchain_tools():
-    """Get all tools as LangChain tool objects."""
-    return [json_to_dataframe, list_saved_dataframes, clear_dataframes, get_dataframe_info]
+    """
+    Get all tools as LangChain tool objects.
+    
+    This includes:
+    - DataFrame management tools (json_to_dataframe, list_saved_dataframes, etc.)
+    - All technical analysis indicator tools (SMA, EMA, RSI, MACD, etc.)
+    
+    Returns:
+        List of all available LangChain tools
+    """
+    base_tools = [
+        json_to_dataframe, 
+        list_saved_dataframes, 
+        clear_dataframes, 
+        get_dataframe_info
+    ]
+    
+    # Add all TA indicator tools
+    ta_tools = _register_ta_tools()
+    
+    return base_tools + ta_tools
 
 # Bridge function for compatibility with existing openrouter_bridge.py
 def get_all_bridge_tools() -> list:

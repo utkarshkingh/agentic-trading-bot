@@ -14,5 +14,6 @@ dependencies = [
     "litellm",
     "mcp[cli]>=1.13.1",
     "pandas>=2.3.2",
+    "pandas-ta>=0.4.71",
     "uvicorn[standard]>=0.35.0",
 ]
