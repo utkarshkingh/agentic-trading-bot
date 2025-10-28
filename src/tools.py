@@ -63,12 +63,16 @@ Architecture:
 """
 
 import json
+import logging
 import pandas as pd
 import pandas_ta as ta
 import inspect
 from typing import Literal, Optional, Any, Dict, List
 from langchain_core.tools import tool, StructuredTool
 from pydantic import BaseModel, Field, create_model
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Global storage for dataframes
 saved_dataframes: dict[str, pd.DataFrame] = {}
@@ -272,13 +276,23 @@ def _create_ta_tool(indicator_name: str, indicator_func: callable) -> Structured
         
         try:
             # Extract price data columns needed by this indicator
+            # Map DataFrame column names to pandas-ta parameter names
+            param_name_map = {
+                'open': 'open_',
+                'high': 'high',
+                'low': 'low',
+                'close': 'close',
+                'volume': 'volume'
+            }
+            
             ta_kwargs = {}
             for col in price_cols:
                 col_name = col.lower()
                 # Try common column name variations
                 for variant in [col_name, col_name.capitalize(), col_name.upper()]:
                     if variant in df.columns:
-                        ta_kwargs[col if col != 'open' else 'open_'] = df[variant]
+                        param_name = param_name_map.get(col, col)
+                        ta_kwargs[param_name] = df[variant]
                         break
                 else:
                     return json.dumps({
@@ -375,7 +389,7 @@ def _get_ta_indicators() -> Dict[str, callable]:
             continue
             
         attr = getattr(ta, attr_name)
-        if not callable(attr) or not inspect.isfunction(attr):
+        if not inspect.isfunction(attr):
             continue
         
         # Check if it's an indicator function (has OHLCV parameters)
@@ -415,7 +429,7 @@ def _register_ta_tools() -> List[StructuredTool]:
             ta_tools.append(tool)
         except Exception as e:
             # Skip indicators that fail to register
-            print(f"Warning: Could not register {indicator_name}: {e}")
+            logger.warning(f"Could not register {indicator_name}: {e}")
             continue
     
     return ta_tools
