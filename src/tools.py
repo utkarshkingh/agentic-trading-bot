@@ -1,3 +1,66 @@
+"""
+Technical Analysis Tools for Agentic Trading Bot
+
+This module provides a comprehensive set of tools for technical analysis using pandas-ta,
+integrated with LangChain for AI agent workflows.
+
+Features:
+---------
+1. DataFrame Management Tools:
+   - json_to_dataframe: Convert trading data JSON to pandas DataFrame
+   - list_saved_dataframes: List all DataFrames in memory
+   - clear_dataframes: Clear all saved DataFrames
+   - get_dataframe_info: Get detailed info about a DataFrame
+
+2. Technical Analysis Indicators (161 tools):
+   All pandas-ta indicators are automatically registered as tools:
+   - Overlap: SMA, EMA, WMA, VWAP, etc.
+   - Momentum: RSI, MACD, Stochastic, CCI, etc.
+   - Volatility: ATR, Bollinger Bands, Keltner Channels, etc.
+   - Volume: OBV, AD, CMF, MFI, etc.
+   - Trend: ADX, Aroon, Supertrend, etc.
+   - Statistics, Performance, Candle patterns, and more
+
+Usage Example:
+--------------
+```python
+from tools import get_langchain_tools, saved_dataframes
+import pandas as pd
+
+# Get all tools
+tools = get_langchain_tools()  # Returns 165 tools (4 base + 161 TA)
+
+# Create and save OHLCV data
+df = pd.DataFrame({
+    'open': [...], 'high': [...], 'low': [...], 
+    'close': [...], 'volume': [...]
+})
+saved_dataframes['my_stock'] = df
+
+# Use TA tools
+sma_tool = [t for t in tools if t.name == 'ta_sma'][0]
+result = sma_tool.invoke({
+    'dataframe_name': 'my_stock',
+    'length': 20
+})
+```
+
+Best Practices:
+---------------
+1. All TA tools work on saved DataFrames - use json_to_dataframe first
+2. Tools add indicator columns directly to the DataFrame
+3. Use result_column_prefix to customize column names
+4. All tools return structured JSON with success/error indicators
+5. Tools validate required OHLCV columns automatically
+
+Architecture:
+-------------
+- Dynamic tool registration using introspection
+- Pydantic models for parameter validation
+- Comprehensive error handling
+- AI agent and MCP best practices compliant
+- Memory-efficient DataFrame storage
+"""
 
 import json
 import pandas as pd
