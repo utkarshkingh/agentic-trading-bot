@@ -11,7 +11,11 @@
     "app": "concurrently -n backend,tauri -c blue,magenta -k \"npm:dev:backend\" \"npm:app:tauri\"",
     "app:tauri": "cd frontend && npm run tauri dev",
     "build:sidecar": "powershell -ExecutionPolicy Bypass -File scripts/build-sidecar.ps1",
-    "build:windows": "npm run build:sidecar && cd frontend && npm run tauri build"
+    "build:windows": "npm run build:sidecar && cd frontend && npm run tauri build",
+    "serve:lan": "cd backend && uv run uvicorn src.main:app --host 0.0.0.0 --port 8000",
+    "android:init": "cd frontend && npm run tauri android init",
+    "android:dev": "cd frontend && npm run tauri android dev",
+    "android:build": "cd frontend && npm run tauri android build"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

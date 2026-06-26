@@ -43,11 +43,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow the Next.js dev server (port 3000) and any local origin
+# The UI can run as a browser dev server (localhost:3000), a desktop Tauri
+# webview (tauri://localhost), or an Android webview (https://tauri.localhost),
+# so allow any origin. No cookies/credentials are used — this is an auth-free
+# personal app whose secrets live only in the backend.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
