@@ -1,0 +1,15 @@
+{
+  "name": "trading-bot",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Agentic trading bot — one command runs the FastAPI backend and the frontend together",
+  "scripts": {
+    "setup": "cd frontend && npm install && cd ../backend && uv sync",
+    "dev": "concurrently -n backend,frontend -c blue,green -k \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "cd backend && uv run uvicorn src.main:app --host localhost --port 8000 --reload",
+    "dev:frontend": "cd frontend && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
