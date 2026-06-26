@@ -38,6 +38,11 @@ dependencies = [
     "pydantic-settings>=2.6.0",
 ]
 
+[dependency-groups]
+# Tools for freezing the backend into a Tauri sidecar binary.
+# Install with: uv sync --group package
+package = ["pyinstaller>=6.11.0"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

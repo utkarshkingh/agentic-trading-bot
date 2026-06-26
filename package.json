@@ -9,7 +9,9 @@
     "dev:backend": "cd backend && uv run uvicorn src.main:app --host localhost --port 8000 --reload",
     "dev:frontend": "cd frontend && npm run dev",
     "app": "concurrently -n backend,tauri -c blue,magenta -k \"npm:dev:backend\" \"npm:app:tauri\"",
-    "app:tauri": "cd frontend && npm run tauri dev"
+    "app:tauri": "cd frontend && npm run tauri dev",
+    "build:sidecar": "powershell -ExecutionPolicy Bypass -File scripts/build-sidecar.ps1",
+    "build:windows": "npm run build:sidecar && cd frontend && npm run tauri build"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
