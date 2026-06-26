@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@ag-ui/client": "^0.0.53",
+    "@ag-ui/client": "0.0.57",
     "@copilotkit/a2ui-renderer": "^1.59.2",
     "@copilotkit/react-core": "^1.59.2",
     "@copilotkit/react-ui": "^1.59.2",
