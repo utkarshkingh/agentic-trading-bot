@@ -9,6 +9,8 @@ import {
 } from "@copilotkit/react-core/v2";
 import { useEffect, useState } from "react";
 
+import { BackendSettings } from "@/components/BackendSettings";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,6 +212,8 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        <BackendSettings />
       </aside>
 
       {/* ── Main content area ─────────────────────────────────────────────────── */}
