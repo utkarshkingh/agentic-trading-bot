@@ -1,0 +1,8 @@
+# Rust build output
+/target
+
+# Tauri-generated schemas and mobile projects (regenerated via the CLI)
+/gen
+
+# Bundled sidecar binaries (produced by the build-sidecar script)
+/binaries
