@@ -24,7 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from src.graph.state import TradingState
-from src.settings import settings
+from src.runtime_config import ModelConfig, get_model_config
 from src.tools.fundamental_tools import analyze_fundamentals, get_analyst_recommendations
 from src.tools.market_tools import (
     get_current_quote,
@@ -104,29 +104,61 @@ TOOL_NAMES = {t.name for t in TRADING_TOOLS}
 # LLM factory
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_llm() -> ChatLiteLLM:
-    """Build the LiteLLM-backed ChatLangChain model.
+# Maps a LiteLLM provider prefix to the env var LiteLLM reads for its key.
+# Lets one "API key" field in the UI work for whichever vendor the model
+# string implies (e.g. "openrouter/...", "anthropic/...", "gemini/...").
+_PROVIDER_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "together_ai": "TOGETHERAI_API_KEY",
+    "fireworks_ai": "FIREWORKS_API_KEY",
+    "xai": "XAI_API_KEY",
+    "perplexity": "PERPLEXITYAI_API_KEY",
+    "azure": "AZURE_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+}
 
-    Injects API keys from settings into the environment so LiteLLM picks them up.
+
+def _build_llm(cfg: ModelConfig) -> ChatLiteLLM:
+    """Construct the model for the given config.
+
+    Routes the key both ways for compatibility: into the provider's env var
+    (LiteLLM's primary mechanism) and, where the class supports it, as a
+    direct constructor argument.
     """
-    if settings.openrouter_api_key:
-        os.environ["OPENROUTER_API_KEY"] = settings.openrouter_api_key
-    if settings.openai_api_key:
-        os.environ["OPENAI_API_KEY"] = settings.openai_api_key
-    if settings.anthropic_api_key:
-        os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+    if cfg.api_key:
+        provider = cfg.model.split("/", 1)[0] if "/" in cfg.model else "openai"
+        env_var = _PROVIDER_ENV.get(provider)
+        if env_var:
+            os.environ[env_var] = cfg.api_key
 
-    return ChatLiteLLM(model=settings.trading_model, temperature=0.1)
+    kwargs: dict[str, Any] = {"model": cfg.model, "temperature": 0.1}
+    fields = getattr(ChatLiteLLM, "model_fields", {})
+    if cfg.api_key and "api_key" in fields:
+        kwargs["api_key"] = cfg.api_key
+    if cfg.api_base and "api_base" in fields:
+        kwargs["api_base"] = cfg.api_base
+    return ChatLiteLLM(**kwargs)
 
 
-_llm: ChatLiteLLM | None = None
+# Cached per config so changing the model/key in the UI rebuilds on next turn.
+_llm_cache: dict[tuple[str, str, str], ChatLiteLLM] = {}
 
 
 def get_llm() -> ChatLiteLLM:
-    global _llm
-    if _llm is None:
-        _llm = _make_llm()
-    return _llm
+    cfg = get_model_config()
+    cache_key = (cfg.model, cfg.api_key, cfg.api_base)
+    llm = _llm_cache.get(cache_key)
+    if llm is None:
+        llm = _build_llm(cfg)
+        _llm_cache[cache_key] = llm
+    return llm
 
 
 # ─────────────────────────────────────────────────────────────────────────────
