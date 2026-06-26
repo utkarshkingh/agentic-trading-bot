@@ -1,0 +1,49 @@
+[project]
+name = "agentic-trading-bot"
+version = "0.2.0"
+description = "Agentic trading bot with LangGraph multi-agent architecture and AG-UI streaming"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # AG-UI + LangGraph integration
+    "ag-ui-langgraph[fastapi]>=0.0.42",
+    "ag-ui-protocol>=0.1.18",
+    # LangGraph + LangChain
+    "langgraph>=1.2.6",
+    "langgraph-supervisor>=0.0.31",
+    "langchain>=1.2.0",
+    "langchain-core>=0.3.0",
+    "langchain-litellm>=0.7.0",
+    "langchain-mcp-adapters>=0.1.10",
+    # LiteLLM for multi-provider LLM access (OpenRouter, OpenAI, Anthropic, etc.)
+    "litellm>=1.72.0",
+    # FastAPI
+    "fastapi>=0.117.1",
+    "uvicorn[standard]>=0.35.0",
+    # Market data
+    "yfinance>=1.4.0",
+    "mcp[cli]>=1.13.1",
+    # Technical analysis
+    "pandas-ta>=0.3.14b",
+    "pandas>=2.3.2",
+    "numpy>=2.0.0",
+    "scipy>=1.14.0",
+    # News & sentiment
+    "feedparser>=6.0.12",
+    "gnewsclient>=1.12",
+    "httpx>=0.28.0",
+    # Config
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv]
+dev-dependencies = []
