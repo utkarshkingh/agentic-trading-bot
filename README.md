@@ -24,9 +24,11 @@ npm run setup     # install frontend + backend deps (once)
 npm run dev       # backend + frontend together → http://localhost:3000
 ```
 
-Copy `backend/.env.example` → `backend/.env` and add a model API key
-(`OPENROUTER_API_KEY`, etc.). Optionally copy `frontend/.env.example` to set a
-non-default backend URL.
+Set your model and API key from the **Model** panel in the app sidebar — paste
+any vendor's key (OpenAI, Anthropic, OpenRouter, Gemini, Groq, Ollama, …) and
+LiteLLM routes it automatically. The choice persists on the backend, so this
+works the same in the desktop and Android apps. (Alternatively, seed defaults
+via `backend/.env` — see `backend/.env.example`.)
 
 Run it as a native desktop window (needs the Rust toolchain):
 
