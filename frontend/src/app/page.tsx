@@ -10,6 +10,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { BackendSettings } from "@/components/BackendSettings";
+import { ModelSettings } from "@/components/ModelSettings";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -213,6 +214,7 @@ export default function Home() {
           )}
         </div>
 
+        <ModelSettings />
         <BackendSettings />
       </aside>
 
