@@ -13,7 +13,6 @@
     "@copilotkit/a2ui-renderer": "^1.59.2",
     "@copilotkit/react-core": "^1.59.2",
     "@copilotkit/react-ui": "^1.59.2",
-    "@copilotkit/runtime": "^1.59.2",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
