@@ -833,7 +833,9 @@ export const tradingCatalog = createCatalog(
                 contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", color: "#e2e8f0", fontSize: 11 }}
                 formatter={(val: number, name: string) => [val.toFixed(2), name]}
               />
-              <Bar dataKey="body" stackId="candle" fill="transparent" radius={0}>
+              {/* Transparent spacer lifts the body bar to the correct price level */}
+              <Bar dataKey="bottom" stackId="candle" fill="transparent" radius={0} isAnimationActive={false} />
+              <Bar dataKey="body" stackId="candle" radius={0} isAnimationActive={false}>
                 {chartData.map((d, i) => <Cell key={i} fill={d.fill} />)}
               </Bar>
             </ComposedChart>

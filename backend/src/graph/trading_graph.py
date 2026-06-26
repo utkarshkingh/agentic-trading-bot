@@ -46,6 +46,7 @@ from src.tools.portfolio_tools import (
     get_zerodha_positions,
     remove_from_watchlist,
     summarize_portfolio,
+    update_activity_log,
 )
 from src.tools.risk_tools import (
     compute_portfolio_correlation,
@@ -90,6 +91,7 @@ TRADING_TOOLS = [
     get_watchlist,
     add_to_watchlist,
     remove_from_watchlist,
+    update_activity_log,
     get_zerodha_holdings,
     get_zerodha_positions,
     get_zerodha_margins,
@@ -329,18 +331,27 @@ async def state_update_tool_node(state: TradingState, config: RunnableConfig):
             partial = _parse_tool_result(tool_name, msg.content, state)
             state_updates.update(partial)
 
-            # Summarise for activity log
-            try:
-                data = json.loads(msg.content)
-                if data.get("success"):
-                    analysis = data.get("analysis", data.get("risk_metrics", {}))
-                    sig = analysis.get("overall_signal", "")
-                    tkr = analysis.get("ticker", state.get("ticker", ""))
-                    if sig and tkr:
-                        entry = f"✓ {tool_name.replace('_', ' ').title()}: {tkr} → {sig}"
-                        activity.append(entry)
-            except Exception:
-                pass
+            # Append explicit entries from update_activity_log tool
+            if tool_name == "update_activity_log":
+                try:
+                    data = json.loads(msg.content)
+                    if data.get("success") and data.get("entry"):
+                        activity.append(data["entry"])
+                except Exception:
+                    pass
+            else:
+                # Auto-summarise from structured tool results
+                try:
+                    data = json.loads(msg.content)
+                    if data.get("success"):
+                        analysis = data.get("analysis", data.get("risk_metrics", {}))
+                        sig = analysis.get("overall_signal", "")
+                        tkr = analysis.get("ticker", state.get("ticker", ""))
+                        if sig and tkr:
+                            entry = f"✓ {tool_name.replace('_', ' ').title()}: {tkr} → {sig}"
+                            activity.append(entry)
+                except Exception:
+                    pass
 
     if activity != state.get("activity", []):
         state_updates["activity"] = activity[-10:]  # keep last 10

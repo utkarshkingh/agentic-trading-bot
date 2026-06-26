@@ -108,6 +108,19 @@ def get_zerodha_margins() -> str:
 
 
 @tool
+def update_activity_log(entry: str) -> str:
+    """Append a short summary entry to the live activity log shown on the dashboard.
+
+    Call this after completing any substantive analysis step so the user sees
+    real-time progress even before you finish typing your full response.
+
+    Args:
+        entry: One-line summary, e.g. "Analysed RELIANCE: Bullish signal, 73% confidence"
+    """
+    return json.dumps({"success": True, "entry": entry.strip()})
+
+
+@tool
 def summarize_portfolio(holdings_json: str, current_prices_json: str) -> str:
     """Calculate portfolio summary statistics from holdings and current prices.
 
